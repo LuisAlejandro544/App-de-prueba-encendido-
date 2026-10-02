@@ -18,6 +18,7 @@ import androidx.core.app.NotificationCompat
 import com.example.MainActivity
 import com.example.R
 import com.example.WakeApplication
+import com.example.receiver.WakeDeviceAdminReceiver
 import com.example.receiver.WakeScreenActivity
 import com.example.sensor.MotionWakeDetector
 import kotlinx.coroutines.CoroutineScope
@@ -32,14 +33,15 @@ import java.util.Calendar
 
 /**
  * WakeMotionService: Servicio en primer plano (Foreground Service) que gestiona
- * el monitoreo del acelerómetro de forma eficiente para encender la pantalla.
+ * el monitoreo del acelerómetro de forma eficiente para encender y apagar la pantalla.
  *
- * Estrategias de optimización de batería y usabilidad:
- * 1. Monitoreo pasivo continuo cuando la pantalla está apagada.
- * 2. Soporte para pruebas en vivo mientras la app WakeGuard está abierta en primer plano.
- * 3. Pausa del sensor cuando el usuario usa otras aplicaciones con pantalla encendida.
- * 4. Suspensión en horario nocturno y corte automático ante batería baja.
- * 5. WakeLock seguro con liberación garantizada para evitar drenaje de energía.
+ * Características avanzadas:
+ * 1. Monitoreo continuo cuando la pantalla está apagada usando CPU Partial WakeLock para evitar
+ *    que el kernel de Android entre en Deep Sleep y congele las lecturas de aceleración.
+ * 2. Apagado y bloqueo inmediato mediante la API oficial de Administrador de Dispositivos (lockNow)
+ *    al sacudir el teléfono con la pantalla encendida.
+ * 3. Encendido garantizado mediante WakeLock y actividad auxiliar transparente.
+ * 4. Pausa de ahorro cuando el usuario navega en otras aplicaciones.
  */
 class WakeMotionService : Service() {
 
@@ -50,6 +52,9 @@ class WakeMotionService : Service() {
     private var powerManager: PowerManager? = null
     private var vibrator: Vibrator? = null
 
+    // Bloqueo de CPU para evitar que el procesador entre en suspensión profunda (Deep Sleep) con la pantalla apagada
+    private var cpuPartialWakeLock: PowerManager.WakeLock? = null
+
     private var isManuallyPaused = false
     private var isScreenCurrentlyOn = false
     private var currentBatteryPct = 100
@@ -59,6 +64,8 @@ class WakeMotionService : Service() {
             when (intent?.action) {
                 Intent.ACTION_SCREEN_ON -> {
                     isScreenCurrentlyOn = true
+                    // Al encender la pantalla liberamos el bloqueo de CPU para no consumir energía innecesaria
+                    liberarCpuWakeLock()
                     evaluarEstadoDeDeteccion("Pantalla encendida")
                 }
                 Intent.ACTION_SCREEN_OFF -> {
@@ -113,7 +120,7 @@ class WakeMotionService : Service() {
 
     private fun inicializarDetector() {
         wakeDetector = MotionWakeDetector(this) { triggerType, gForce ->
-            despertarPantalla(triggerType, gForce)
+            gestionarGestoDeMovimiento(triggerType, gForce)
         }
         currentDetectorInstance = wakeDetector
         activeServiceInstance = this
@@ -151,7 +158,7 @@ class WakeMotionService : Service() {
         when (intent?.action) {
             ACTION_START -> {
                 _serviceRunningState.value = true
-                val notification = construirNotificacion("WakeGuard activo: Listo para encender al mover")
+                val notification = construirNotificacion("WakeGuard activo: Sacude para encender o apagar")
                 startForeground(WakeApplication.NOTIFICATION_ID, notification)
                 evaluarEstadoDeDeteccion()
             }
@@ -167,6 +174,34 @@ class WakeMotionService : Service() {
             }
         }
         return START_STICKY
+    }
+
+    /**
+     * Adquiere bloqueo de CPU seguro para que el acelerómetro no se detenga al suspenderse el móvil.
+     */
+    private fun adquirirCpuWakeLock() {
+        if (cpuPartialWakeLock == null) {
+            cpuPartialWakeLock = powerManager?.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "WakeGuard:CpuMotionMonitor"
+            )
+        }
+        if (cpuPartialWakeLock?.isHeld == false) {
+            try {
+                cpuPartialWakeLock?.acquire()
+            } catch (_: Exception) {}
+        }
+    }
+
+    /**
+     * Libera el bloqueo de CPU para evitar consumo innecesario.
+     */
+    private fun liberarCpuWakeLock() {
+        if (cpuPartialWakeLock?.isHeld == true) {
+            try {
+                cpuPartialWakeLock?.release()
+            } catch (_: Exception) {}
+        }
     }
 
     /**
@@ -207,16 +242,19 @@ class WakeMotionService : Service() {
         // 1. Pausa manual solicitada por el usuario
         if (isManuallyPaused) {
             wakeDetector?.isEnabled = false
+            liberarCpuWakeLock()
             actualizarNotificacion("Pausado manualmente desde la barra de estado")
             return
         }
 
         // 2. Ahorro de batería con pantalla encendida:
-        // Si la pantalla está encendida pero la app está en primer plano, dejamos el sensor ACTIVO
-        // para que el usuario pueda probar y calibrar la sacudida en vivo.
-        // Si el usuario está usando otra app o la pantalla de inicio, se pausa el sensor.
-        if (isScreenCurrentlyOn && prefs.screenOnPause.value && !isAppInForeground) {
+        // Si la pantalla está encendida pero la app está en primer plano O el usuario tiene el Administrador activo
+        // para apagar la pantalla, dejamos el sensor ACTIVO.
+        // Si el usuario está usando otra app y screenOnPause está activo sin función de apagar, pausamos.
+        val tieneAdminParaApagar = WakeDeviceAdminReceiver.isDeviceAdminActive(this)
+        if (isScreenCurrentlyOn && prefs.screenOnPause.value && !isAppInForeground && !tieneAdminParaApagar) {
             wakeDetector?.isEnabled = false
+            liberarCpuWakeLock()
             actualizarNotificacion(mensajePersonalizado ?: "Pantalla encendida: Sensor en reposo (Eco)")
             return
         }
@@ -224,6 +262,7 @@ class WakeMotionService : Service() {
         // 3. Pausa por batería baja
         if (prefs.lowBatteryPause.value && currentBatteryPct <= prefs.lowBatteryThreshold.value) {
             wakeDetector?.isEnabled = false
+            liberarCpuWakeLock()
             actualizarNotificacion("Pausado: Batería baja (${currentBatteryPct}%)")
             return
         }
@@ -241,42 +280,71 @@ class WakeMotionService : Service() {
 
             if (enHorarioNocturno) {
                 wakeDetector?.isEnabled = false
+                liberarCpuWakeLock()
                 actualizarNotificacion("Modo Noche: Monitoreo en reposo hasta las $fin:00")
                 return
             }
         }
 
-        // Detección habilitada y lista
+        // Detección habilitada: Si la pantalla está apagada, mantener la CPU despierta para no perder eventos
         wakeDetector?.isEnabled = true
-        actualizarNotificacion(mensajePersonalizado ?: "WakeGuard listo: Mueve el teléfono para encender")
+        if (!isScreenCurrentlyOn) {
+            adquirirCpuWakeLock()
+            actualizarNotificacion(mensajePersonalizado ?: "WakeGuard listo: Sacude para encender pantalla")
+        } else {
+            liberarCpuWakeLock()
+            actualizarNotificacion(mensajePersonalizado ?: "WakeGuard listo: Sacude para apagar pantalla")
+        }
     }
 
     /**
-     * Enciende la pantalla mediante WakeLock y actividad auxiliar o emite evento de prueba si la pantalla ya está activa.
+     * Gestiona el gesto de movimiento de forma bidireccional:
+     * - Si la pantalla está encendida -> APAGA y BLOQUEA mediante Administrador de Dispositivos.
+     * - Si la pantalla está apagada -> ENCIENDE mediante WakeLock y actividad auxiliar.
      */
-    private fun despertarPantalla(triggerType: String, gForce: Float) {
+    private fun gestionarGestoDeMovimiento(triggerType: String, gForce: Float) {
         val app = application as? WakeApplication ?: return
         val prefs = app.preferences
 
-        // 1. Retroalimentación háptica (vibración clara de 70 ms)
-        if (prefs.vibrateOnWake.value) {
-            try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    vibrator?.vibrate(VibrationEffect.createOneShot(70, VibrationEffect.DEFAULT_AMPLITUDE))
-                } else {
-                    @Suppress("DEPRECATION")
-                    vibrator?.vibrate(70)
-                }
-            } catch (_: Exception) { }
-        }
-
-        // Si la pantalla ya está encendida (modo prueba en la app), emitir evento visual para la interfaz
+        // 1. CASO PANTALLA ENCENDIDA: SACUDIR PARA APAGAR / BLOQUEAR
         if (isScreenCurrentlyOn) {
-            _inAppShakeDetectedEvent.value = Pair(System.currentTimeMillis(), gForce)
+            val adminActive = WakeDeviceAdminReceiver.isDeviceAdminActive(this)
+            if (adminActive) {
+                // Vibración háptica de confirmación de apagado
+                if (prefs.vibrateOnWake.value) {
+                    vibrar(65)
+                }
+
+                // Bloqueo y apagado formal de pantalla
+                val bloqueado = WakeDeviceAdminReceiver.lockScreen(this)
+                if (bloqueado) {
+                    _inAppShakeDetectedEvent.value = Pair(System.currentTimeMillis(), gForce)
+
+                    // Registrar evento de apagado en la base de datos Room sobre Dispatchers.IO
+                    serviceScope.launch(Dispatchers.IO) {
+                        app.repository.recordWakeEvent(
+                            triggerType = "SHAKE_LOCK",
+                            gForce = gForce,
+                            batteryLevel = currentBatteryPct
+                        )
+                    }
+                }
+            } else {
+                // Si el Administrador no está activo aún, emitir evento visual para informar al usuario
+                if (prefs.vibrateOnWake.value) {
+                    vibrar(50)
+                }
+                _inAppShakeDetectedEvent.value = Pair(System.currentTimeMillis(), gForce)
+            }
             return
         }
 
-        // 2. Adquirir WakeLock para iluminar la pantalla por 1.5 segundos
+        // 2. CASO PANTALLA APAGADA: SACUDIR PARA ENCENDER
+        if (prefs.vibrateOnWake.value) {
+            vibrar(75)
+        }
+
+        // Adquirir WakeLock para iluminar la pantalla por 1.5 segundos
         try {
             @Suppress("DEPRECATION")
             val wakeLock = powerManager?.newWakeLock(
@@ -288,7 +356,7 @@ class WakeMotionService : Service() {
             wakeLock?.acquire(1500L)
         } catch (_: Exception) { }
 
-        // 3. Iniciar WakeScreenActivity auxiliar para sobrepasar políticas de bloqueo estrictas (Tecno HiOS, MIUI, etc.)
+        // Iniciar WakeScreenActivity auxiliar para sobrepasar políticas de bloqueo estrictas (Tecno HiOS, etc.)
         try {
             val wakeIntent = Intent(this, WakeScreenActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -298,7 +366,7 @@ class WakeMotionService : Service() {
             startActivity(wakeIntent)
         } catch (_: Exception) { }
 
-        // 4. Registrar evento en la base de datos Room mediante Corrutina en Dispatchers.IO
+        // Registrar evento de encendido en la base de datos Room mediante Corrutina en Dispatchers.IO
         serviceScope.launch(Dispatchers.IO) {
             app.repository.recordWakeEvent(
                 triggerType = triggerType,
@@ -306,6 +374,17 @@ class WakeMotionService : Service() {
                 batteryLevel = currentBatteryPct
             )
         }
+    }
+
+    private fun vibrar(milisegundos: Long) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator?.vibrate(VibrationEffect.createOneShot(milisegundos, VibrationEffect.DEFAULT_AMPLITUDE))
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator?.vibrate(milisegundos)
+            }
+        } catch (_: Exception) { }
     }
 
     private fun construirNotificacion(texto: String): Notification {
@@ -347,6 +426,7 @@ class WakeMotionService : Service() {
 
     private fun detenerServicio() {
         _serviceRunningState.value = false
+        liberarCpuWakeLock()
         wakeDetector?.stopListening()
         wakeDetector = null
         currentDetectorInstance = null
@@ -375,7 +455,7 @@ class WakeMotionService : Service() {
         private val _serviceRunningState = MutableStateFlow(false)
         val serviceRunningState: StateFlow<Boolean> = _serviceRunningState.asStateFlow()
 
-        // Evento observable en tiempo real cuando se detecta sacudida con pantalla encendida en la app
+        // Evento observable en tiempo real cuando se detecta sacudida con pantalla encendida
         private val _inAppShakeDetectedEvent = MutableStateFlow<Pair<Long, Float>?>(null)
         val inAppShakeDetectedEvent: StateFlow<Pair<Long, Float>?> = _inAppShakeDetectedEvent.asStateFlow()
 

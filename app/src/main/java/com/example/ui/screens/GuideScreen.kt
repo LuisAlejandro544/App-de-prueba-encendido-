@@ -66,6 +66,8 @@ fun GuideScreen(
 ) {
     val context = LocalContext.current
     val startOnBoot by viewModel.startOnBoot.collectAsStateWithLifecycle()
+    val isDeviceAdminActive by viewModel.isDeviceAdminActive.collectAsStateWithLifecycle()
+    val isOverlayPermissionGranted by viewModel.isOverlayPermissionGranted.collectAsStateWithLifecycle()
     val scrollState = rememberScrollState()
 
     Column(
@@ -81,12 +83,98 @@ fun GuideScreen(
             color = MaterialTheme.colorScheme.onBackground
         )
         Text(
-            text = "Configuraciones recomendadas para que tu teléfono nunca cierre el servicio.",
+            text = "Configuraciones recomendadas para que tu teléfono nunca cierre el servicio y funcione el apagado al sacudir.",
             fontSize = 13.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
         Spacer(modifier = Modifier.height(18.dp))
+
+        // Permiso de Administrador de Dispositivos (Apagar la pantalla al sacudir)
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = if (isDeviceAdminActive) MaterialTheme.colorScheme.surfaceVariant
+                else MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+            )
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Administrador de Dispositivo (Apagar al Sacudir)",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp
+                        )
+                        Text(
+                            text = if (isDeviceAdminActive) "Activo: Puedes apagar la pantalla sacudiendo el móvil."
+                            else "Android prohíbe apagar la pantalla sin permisos. El Administrador de Dispositivo es una política del sistema que NUNCA se desactiva sola.",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(10.dp))
+                Button(
+                    onClick = { viewModel.requestDeviceAdmin(context) },
+                    modifier = Modifier.fillMaxWidth().testTag("guide_request_admin_button"),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isDeviceAdminActive) MaterialTheme.colorScheme.secondary
+                        else MaterialTheme.colorScheme.primary
+                    )
+                ) {
+                    Text(
+                        text = if (isDeviceAdminActive) "Administrador Activo (Configurado) ✓" else "Activar Administrador de Dispositivo",
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // Permiso de Superposición (Mostrar sobre otras apps)
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = "Mostrar sobre otras aplicaciones (Superposición)",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp
+                )
+                Text(
+                    text = "Permite a WakeGuard despertar la pantalla de bloqueo en Android 10+ y capas como HiOS de Tecno.",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+                Button(
+                    onClick = { viewModel.requestOverlayPermission(context) },
+                    modifier = Modifier.fillMaxWidth().testTag("guide_request_overlay_button"),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isOverlayPermissionGranted) MaterialTheme.colorScheme.secondary
+                        else MaterialTheme.colorScheme.tertiary
+                    )
+                ) {
+                    Text(
+                        text = if (isOverlayPermissionGranted) "Superposición Concedida ✓" else "Permitir Mostrar Sobre Otras Apps",
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(14.dp))
 
         // Auto-arranque al encender el teléfono
         Card(

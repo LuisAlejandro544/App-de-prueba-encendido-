@@ -42,8 +42,14 @@ class MotionWakeDetector(
 ) : SensorEventListener {
 
     private val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
-    private val accelerometer: Sensor? = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
-    private val proximitySensor: Sensor? = sensorManager.getDefaultSensor(Sensor.TYPE_PROXIMITY)
+    // Prioriza sensor de acelerómetro con capacidad de despertar el procesador (wake-up sensor)
+    private val accelerometer: Sensor? =
+        sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER, true)
+            ?: sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+    // Prioriza sensor de proximidad de hardware con capacidad wake-up
+    private val proximitySensor: Sensor? =
+        sensorManager.getDefaultSensor(Sensor.TYPE_PROXIMITY, true)
+            ?: sensorManager.getDefaultSensor(Sensor.TYPE_PROXIMITY)
 
     // Estado en vivo observable por la interfaz de usuario
     private val _liveSnapshot = MutableStateFlow(SensorLiveSnapshot())

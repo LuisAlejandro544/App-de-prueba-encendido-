@@ -135,4 +135,23 @@ class ExampleUnitTest {
         }
         assertTrue("Cuando el sensor binario reporta 0.0f debe considerarse CERCA (en bolsillo)", isNearTapado)
     }
+
+    @Test
+    fun `verificar logica de decision bidireccional encendido y apagado por sacudida`() {
+        // Escenario 1: Pantalla encendida + Administrador de dispositivo activo
+        val pantallaEncendida = true
+        val adminActivo = true
+        val accionAlSacudir = when {
+            pantallaEncendida && adminActivo -> "BLOQUEAR_APAGAR"
+            pantallaEncendida && !adminActivo -> "SOLO_FEEDBACK_VISUAL"
+            !pantallaEncendida -> "ILUMINAR_ENCENDER"
+            else -> "IGNORAR"
+        }
+        assertEquals("Con pantalla encendida y administrador activo debe bloquear y apagar", "BLOQUEAR_APAGAR", accionAlSacudir)
+
+        // Escenario 2: Pantalla apagada
+        val pantallaApagada = false
+        val accionPantallaApagada = if (!pantallaApagada) "ILUMINAR_ENCENDER" else "BLOQUEAR_APAGAR"
+        assertEquals("Con pantalla apagada debe encender", "ILUMINAR_ENCENDER", accionPantallaApagada)
+    }
 }

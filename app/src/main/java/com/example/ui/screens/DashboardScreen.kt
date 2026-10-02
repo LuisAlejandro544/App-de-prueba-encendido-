@@ -80,6 +80,8 @@ fun DashboardScreen(
     val gestureMode by viewModel.gestureMode.collectAsStateWithLifecycle()
     val liveSensorData by viewModel.liveSensorData.collectAsStateWithLifecycle()
     val countdown by viewModel.testCountdown.collectAsStateWithLifecycle()
+    val isDeviceAdminActive by viewModel.isDeviceAdminActive.collectAsStateWithLifecycle()
+    val isOverlayPermissionGranted by viewModel.isOverlayPermissionGranted.collectAsStateWithLifecycle()
 
     val scrollState = rememberScrollState()
 
@@ -200,6 +202,148 @@ fun DashboardScreen(
                                 color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.85f)
                             )
                         }
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // Tarjeta de Control Avanzado: Administrador de Dispositivo para Apagar al Sacudir
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 12.dp)
+                .testTag("device_admin_control_card"),
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = if (isDeviceAdminActive) MaterialTheme.colorScheme.surfaceVariant
+                else MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+            ),
+            border = CardDefaults.outlinedCardBorder().copy(
+                brush = Brush.linearGradient(
+                    listOf(
+                        if (isDeviceAdminActive) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary,
+                        MaterialTheme.colorScheme.surfaceVariant
+                    )
+                )
+            )
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (isDeviceAdminActive) MaterialTheme.colorScheme.secondary.copy(alpha = 0.2f)
+                                    else MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Shield,
+                                contentDescription = null,
+                                tint = if (isDeviceAdminActive) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = "Apagar Pantalla al Sacudir",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
+                            )
+                            Text(
+                                text = if (isDeviceAdminActive) "Administrador Activo (Bloqueo directo)" else "Requiere permiso de Administrador",
+                                fontSize = 11.sp,
+                                color = if (isDeviceAdminActive) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    if (!isDeviceAdminActive) {
+                        Button(
+                            onClick = { viewModel.requestDeviceAdmin(context) },
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.testTag("activate_device_admin_button"),
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                        ) {
+                            Text("Activar", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        }
+                    } else {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.CheckCircle,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.secondary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "Listo",
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.secondary,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = if (isDeviceAdminActive) "¡Configurado! Ahora sacudir el teléfono con la pantalla encendida la apagará y bloqueará al instante."
+                    else "Otorga el permiso de Administrador de Dispositivos oficial de Android (nunca se desactiva solo) para bloquear la pantalla al sacudir.",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        // Aviso si falta permiso de Superposición (Mostrar sobre otras apps) para garantizar el encendido
+        if (!isOverlayPermissionGranted) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 12.dp)
+                    .testTag("overlay_permission_warning_card"),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.35f))
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Mostrar sobre otras aplicaciones",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer
+                        )
+                        Text(
+                            text = "Garantiza que el móvil pueda encender la pantalla en Android 10+ y Tecno HiOS.",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.8f)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(
+                        onClick = { viewModel.requestOverlayPermission(context) },
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.testTag("grant_overlay_button"),
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary)
+                    ) {
+                        Text("Permitir", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }

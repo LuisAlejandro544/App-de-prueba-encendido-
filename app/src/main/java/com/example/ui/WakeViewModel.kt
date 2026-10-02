@@ -81,11 +81,20 @@ class WakeViewModel(application: Application) : AndroidViewModel(application) {
     // Evento observable en tiempo real cuando se detecta una sacudida con la app abierta
     val inAppShakeEvent: StateFlow<Pair<Long, Float>?> = WakeMotionService.inAppShakeDetectedEvent
 
+    // Estados reactivos de permisos avanzados
+    private val _isDeviceAdminActive = MutableStateFlow(false)
+    val isDeviceAdminActive: StateFlow<Boolean> = _isDeviceAdminActive.asStateFlow()
+
+    private val _isOverlayPermissionGranted = MutableStateFlow(false)
+    val isOverlayPermissionGranted: StateFlow<Boolean> = _isOverlayPermissionGranted.asStateFlow()
+
     // Estado de la prueba interactiva del botón
     private val _testCountdown = MutableStateFlow<Int?>(null)
     val testCountdown: StateFlow<Int?> = _testCountdown.asStateFlow()
 
     init {
+        checkAdvancedPermissions(application)
+
         // Corrutina en segundo plano para leer datos del sensor activo del servicio periódicamente
         viewModelScope.launch(Dispatchers.Default) {
             while (isActive) {
@@ -94,6 +103,50 @@ class WakeViewModel(application: Application) : AndroidViewModel(application) {
                     _liveSensorData.value = detector.liveSnapshot.value
                 }
                 delay(80) // ~12 fps para actualización fluida de medidores en UI sin gastar CPU
+            }
+        }
+    }
+
+    /**
+     * Comprueba si el Administrador de Dispositivo y el permiso de superposición están habilitados.
+     */
+    fun checkAdvancedPermissions(context: Context) {
+        _isDeviceAdminActive.value = com.example.receiver.WakeDeviceAdminReceiver.isDeviceAdminActive(context)
+        _isOverlayPermissionGranted.value = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            android.provider.Settings.canDrawOverlays(context)
+        } else {
+            true
+        }
+    }
+
+    /**
+     * Lanza la pantalla de configuración del sistema para activar el Administrador de Dispositivos.
+     */
+    fun requestDeviceAdmin(context: Context) {
+        val intent = com.example.receiver.WakeDeviceAdminReceiver.createAddAdminIntent(context).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(intent)
+    }
+
+    /**
+     * Lanza la pantalla de ajustes de Android para conceder permiso de Mostrar sobre otras aplicaciones.
+     */
+    fun requestOverlayPermission(context: Context) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            try {
+                val intent = Intent(
+                    android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    android.net.Uri.parse("package:${context.packageName}")
+                ).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
+            } catch (_: Exception) {
+                val intent = Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
             }
         }
     }
