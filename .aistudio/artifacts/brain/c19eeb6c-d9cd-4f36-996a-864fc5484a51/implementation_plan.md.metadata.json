@@ -1,0 +1,6 @@
+{
+  "summary":  "Plan técnico y de diseño para la detección y supresión automática de baches vehiculares y movimiento en bolso koala (filtro anti-traqueteo continuo, ventana fisiológica de ángulo y doble verificación de proximidad) sin requerir ninguna configuración manual del usuario.",
+  "updatedAt":  "2026-10-02T01:19:59.772204162Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}

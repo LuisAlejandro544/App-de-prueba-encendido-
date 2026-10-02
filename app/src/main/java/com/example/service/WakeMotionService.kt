@@ -1,0 +1,370 @@
+package com.example.service
+
+import android.app.Notification
+import android.app.PendingIntent
+import android.app.Service
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.os.BatteryManager
+import android.os.Build
+import android.os.IBinder
+import android.os.PowerManager
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
+import androidx.core.app.NotificationCompat
+import com.example.MainActivity
+import com.example.R
+import com.example.WakeApplication
+import com.example.receiver.WakeScreenActivity
+import com.example.sensor.MotionWakeDetector
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import java.util.Calendar
+
+/**
+ * WakeMotionService: Servicio en primer plano (Foreground Service) que gestiona
+ * el monitoreo del acelerómetro de forma eficiente para encender la pantalla.
+ * 
+ * Estrategias clave de ahorro de batería:
+ * 1. Pausa el sensor automáticamente mientras el usuario está usando la pantalla.
+ * 2. Pausa en horario nocturno para que el consumo durante el sueño sea del 0%.
+ * 3. Pausa si la batería cae por debajo del umbral de seguridad (ej. 15%).
+ * 4. Utiliza WakeLock con liberación automática por tiempo (nunca bloquea el sueño profundo indefinidamente).
+ */
+class WakeMotionService : Service() {
+
+    private val serviceJob = SupervisorJob()
+    private val serviceScope = CoroutineScope(Dispatchers.Main + serviceJob)
+
+    private var wakeDetector: MotionWakeDetector? = null
+    private var powerManager: PowerManager? = null
+    private var vibrator: Vibrator? = null
+
+    private var isManuallyPaused = false
+    private var isScreenCurrentlyOn = false
+    private var currentBatteryPct = 100
+
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                Intent.ACTION_SCREEN_ON -> {
+                    isScreenCurrentlyOn = true
+                    evaluarEstadoDeDeteccion("Pantalla encendida (Ahorrando batería)")
+                }
+                Intent.ACTION_SCREEN_OFF -> {
+                    isScreenCurrentlyOn = false
+                    evaluarEstadoDeDeteccion("Pantalla apagada (Monitoreo activo)")
+                }
+                Intent.ACTION_BATTERY_CHANGED -> {
+                    val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+                    val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
+                    if (level != -1 && scale != -1) {
+                        currentBatteryPct = (level * 100 / scale.toFloat()).toInt()
+                        
+                        // Si la batería desciende al límite crítico (<= 1%) y el rescate está activo,
+                        // se asegura el armado del auto-encendido programado antes de que el dispositivo muera.
+                        verificarArmadoDeRescate()
+                        
+                        evaluarEstadoDeDeteccion()
+                    }
+                }
+                Intent.ACTION_SHUTDOWN -> {
+                    // El sistema se está apagando: si el rescate está activo, asegurar programación inmediata
+                    armarRescatePorApagadoInminente()
+                }
+            }
+        }
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
+
+        vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val vibratorManager = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
+            vibratorManager?.defaultVibrator
+        } else {
+            @Suppress("DEPRECATION")
+            getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+        }
+
+        // Registrar receptores de pantalla, batería y apagado del sistema
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_BATTERY_CHANGED)
+            addAction(Intent.ACTION_SHUTDOWN)
+        }
+        registerReceiver(screenReceiver, filter)
+
+        // Verificar estado inicial de la pantalla
+        isScreenCurrentlyOn = powerManager?.isInteractive ?: false
+
+        inicializarDetector()
+    }
+
+    private fun inicializarDetector() {
+        wakeDetector = MotionWakeDetector(this) { triggerType, gForce ->
+            despertarPantalla(triggerType, gForce)
+        }
+        currentDetectorInstance = wakeDetector
+
+        val app = application as? WakeApplication ?: return
+        val prefs = app.preferences
+
+        // Sincronizar configuraciones con el detector
+        serviceScope.launch {
+            prefs.gestureMode.collect { mode ->
+                wakeDetector?.gestureMode = mode
+            }
+        }
+        serviceScope.launch {
+            prefs.sensitivity.collect { sens ->
+                wakeDetector?.sensitivity = sens
+            }
+        }
+        serviceScope.launch {
+            prefs.pocketProtection.collect { pocket ->
+                wakeDetector?.pocketProtectionEnabled = pocket
+            }
+        }
+        serviceScope.launch {
+            prefs.cooldownSeconds.collect { cooldownSec ->
+                wakeDetector?.cooldownMillis = cooldownSec * 1000L
+            }
+        }
+
+        wakeDetector?.startListening(prefs.ecoSampling.value)
+        evaluarEstadoDeDeteccion()
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ACTION_START -> {
+                _serviceRunningState.value = true
+                val notification = construirNotificacion("WakeGuard activo: Listo para encender al mover")
+                startForeground(WakeApplication.NOTIFICATION_ID, notification)
+                evaluarEstadoDeDeteccion()
+            }
+            ACTION_STOP -> {
+                detenerServicio()
+            }
+            ACTION_TOGGLE_PAUSE -> {
+                isManuallyPaused = !isManuallyPaused
+                evaluarEstadoDeDeteccion()
+            }
+        }
+        return START_STICKY
+    }
+
+    /**
+     * Comprueba si la batería cayó al límite de descarga (<= 1%) para armar el encendido de rescate.
+     * Si la batería tiene carga normal (> 1%), no interviene.
+     */
+    private fun verificarArmadoDeRescate() {
+        val app = application as? WakeApplication ?: return
+        val prefs = app.preferences
+
+        if (prefs.rescueWakeEnabled.value && currentBatteryPct <= 1 && !prefs.rescueArmed.value) {
+            val hora = prefs.rescueWakeHour.value
+            val minuto = prefs.rescueWakeMinute.value
+            com.example.receiver.ScheduledWakeReceiver.programarAlarmaRescate(this, hora, minuto)
+            prefs.setRescueArmed(true)
+            actualizarNotificacion("Batería Crítica: Auto-encendido de rescate armado para las %02d:%02d".format(hora, minuto))
+        }
+    }
+
+    /**
+     * Asegura que el auto-encendido quede programado en el hardware si el sistema entra en apagado total.
+     */
+    private fun armarRescatePorApagadoInminente() {
+        val app = application as? WakeApplication ?: return
+        val prefs = app.preferences
+
+        if (prefs.rescueWakeEnabled.value) {
+            val hora = prefs.rescueWakeHour.value
+            val minuto = prefs.rescueWakeMinute.value
+            com.example.receiver.ScheduledWakeReceiver.programarAlarmaRescate(this, hora, minuto)
+            prefs.setRescueArmed(true)
+        }
+    }
+
+    /**
+     * Evalúa todas las condiciones de ahorro de energía antes de encender o pausar la escucha del sensor.
+     */
+    private fun evaluarEstadoDeDeteccion(mensajePersonalizado: String? = null) {
+        val app = application as? WakeApplication ?: return
+        val prefs = app.preferences
+
+        // 1. Pausa manual
+        if (isManuallyPaused) {
+            wakeDetector?.isEnabled = false
+            actualizarNotificacion("Pausado manualmente desde la barra de estado")
+            return
+        }
+
+        // 2. Ahorro de pantalla encendida: si el usuario ya está viendo la pantalla, no gastar energía detectando
+        if (isScreenCurrentlyOn && prefs.screenOnPause.value) {
+            wakeDetector?.isEnabled = false
+            actualizarNotificacion(mensajePersonalizado ?: "Pantalla encendida: Sensor en reposo (Eco)")
+            return
+        }
+
+        // 3. Pausa por batería baja
+        if (prefs.lowBatteryPause.value && currentBatteryPct <= prefs.lowBatteryThreshold.value) {
+            wakeDetector?.isEnabled = false
+            actualizarNotificacion("Pausado: Batería baja (${currentBatteryPct}%)")
+            return
+        }
+
+        // 4. Pausa por horario nocturno
+        if (prefs.nightModeEnabled.value) {
+            val horaActual = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+            val inicio = prefs.nightStartHour.value
+            val fin = prefs.nightEndHour.value
+            val enHorarioNocturno = if (inicio > fin) {
+                horaActual >= inicio || horaActual < fin
+            } else {
+                horaActual in inicio until fin
+            }
+
+            if (enHorarioNocturno) {
+                wakeDetector?.isEnabled = false
+                actualizarNotificacion("Modo Noche: Monitoreo en reposo hasta las $fin:00")
+                return
+            }
+        }
+
+        // Si pasa todas las validaciones, sensor activo y listo
+        wakeDetector?.isEnabled = true
+        actualizarNotificacion(mensajePersonalizado ?: "WakeGuard listo: Mueve el teléfono para encender")
+    }
+
+    /**
+     * Enciende la pantalla mediante WakeLock y actividad auxiliar garantizada.
+     */
+    private fun despertarPantalla(triggerType: String, gForce: Float) {
+        val app = application as? WakeApplication ?: return
+        val prefs = app.preferences
+
+        // 1. Retroalimentación háptica (vibración corta de 60ms) si está activada
+        if (prefs.vibrateOnWake.value) {
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    vibrator?.vibrate(VibrationEffect.createOneShot(55, VibrationEffect.DEFAULT_AMPLITUDE))
+                } else {
+                    @Suppress("DEPRECATION")
+                    vibrator?.vibrate(55)
+                }
+            } catch (_: Exception) { }
+        }
+
+        // 2. Adquirir WakeLock para iluminar la pantalla por 1.5 segundos
+        try {
+            @Suppress("DEPRECATION")
+            val wakeLock = powerManager?.newWakeLock(
+                PowerManager.SCREEN_BRIGHT_WAKE_LOCK or
+                PowerManager.ACQUIRE_CAUSES_WAKEUP or
+                PowerManager.ON_AFTER_RELEASE,
+                "WakeGuard:MotionScreenWake"
+            )
+            wakeLock?.acquire(1500L)
+        } catch (_: Exception) { }
+
+        // 3. Iniciar WakeScreenActivity auxiliar para sobrepasar políticas de bloqueo estrictas
+        try {
+            val wakeIntent = Intent(this, WakeScreenActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                addFlags(Intent.FLAG_ACTIVITY_NO_USER_ACTION)
+            }
+            startActivity(wakeIntent)
+        } catch (_: Exception) { }
+
+        // 4. Registrar evento en la base de datos Room mediante Corrutina
+        serviceScope.launch(Dispatchers.IO) {
+            app.repository.recordWakeEvent(
+                triggerType = triggerType,
+                gForce = gForce,
+                batteryLevel = currentBatteryPct
+            )
+        }
+    }
+
+    private fun construirNotificacion(texto: String): Notification {
+        val pendingIntentMain = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val pauseIntent = Intent(this, WakeMotionService::class.java).apply {
+            action = ACTION_TOGGLE_PAUSE
+        }
+        val pendingPause = PendingIntent.getService(
+            this,
+            1,
+            pauseIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val textoAccion = if (isManuallyPaused) "Reanudar" else "Pausar"
+
+        return NotificationCompat.Builder(this, WakeApplication.CHANNEL_ID)
+            .setContentTitle("WakeGuard: Cuidador de Botón")
+            .setContentText(texto)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentIntent(pendingIntentMain)
+            .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .addAction(android.R.drawable.ic_media_pause, textoAccion, pendingPause)
+            .build()
+    }
+
+    private fun actualizarNotificacion(texto: String) {
+        val notification = construirNotificacion(texto)
+        val manager = getSystemService(NOTIFICATION_SERVICE) as? android.app.NotificationManager
+        manager?.notify(WakeApplication.NOTIFICATION_ID, notification)
+    }
+
+    private fun detenerServicio() {
+        _serviceRunningState.value = false
+        wakeDetector?.stopListening()
+        wakeDetector = null
+        currentDetectorInstance = null
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
+    override fun onDestroy() {
+        detenerServicio()
+        try {
+            unregisterReceiver(screenReceiver)
+        } catch (_: Exception) { }
+        serviceScope.cancel()
+        super.onDestroy()
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    companion object {
+        const val ACTION_START = "com.example.action.START"
+        const val ACTION_STOP = "com.example.action.STOP"
+        const val ACTION_TOGGLE_PAUSE = "com.example.action.TOGGLE_PAUSE"
+
+        private val _serviceRunningState = MutableStateFlow(false)
+        val serviceRunningState: StateFlow<Boolean> = _serviceRunningState.asStateFlow()
+
+        // Puntero estático para que la UI observe los sensores en vivo
+        var currentDetectorInstance: MotionWakeDetector? = null
+    }
+}

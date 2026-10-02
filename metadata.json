@@ -1,0 +1,6 @@
+{
+  "name": "WakeGuard",
+  "description": "Protege tu botón de encendido encendiendo la pantalla con movimiento inteligente de bajo consumo de batería y prevención en bolsillo.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

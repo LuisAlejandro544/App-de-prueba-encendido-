@@ -1,0 +1,71 @@
+name: Build Debug APK
+
+on:
+  # Permite la ejecución manual desde la pestaña 'Actions' de GitHub
+  workflow_dispatch:
+    inputs:
+      enable_cache:
+        description: '¿Habilitar caché de dependencias Gradle? (Desactivado por defecto)'
+        required: false
+        type: boolean
+        default: false
+  # Ejecución automática al realizar push o pull request a las ramas principales
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  build-debug:
+    name: Compilar APK Debug con Firma Autónoma
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Descarga todo el código fuente del repositorio
+      - name: Descargar código fuente del repositorio
+        uses: actions/checkout@v4
+
+      # 2. Configura el entorno Java (JDK 17 recomendado para Android Gradle Plugin 8.x)
+      - name: Configurar JDK 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      # 3. Caché de Gradle Opcional: Solo se activa si el usuario lo marca manualmente en workflow_dispatch
+      - name: Configurar Caché de Gradle (Opcional manual)
+        if: ${{ inputs.enable_cache == true }}
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      # 4. Otorgar permisos de ejecución a los scripts
+      - name: Asignar permisos de ejecución
+        run: |
+          chmod +x ./generate_signature.sh
+          if [ -f ./gradlew ]; then
+            chmod +x ./gradlew
+          fi
+
+      # 5. Generar de forma forzada y automática la firma debug.keystore en el runner sin esperar intervención
+      - name: Generar firma debug autónoma
+        run: ./generate_signature.sh
+
+      # 6. Compilar el APK Debug
+      - name: Compilar APK Debug (assembleDebug)
+        run: |
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      # 7. Subir el APK Debug compilado como artefacto descargable
+      - name: Publicar artefacto APK Debug
+        uses: actions/upload-artifact@v4
+        with:
+          name: WakeGuard-Debug-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">WakeGuard</string>
+    <string name="notification_channel_name">Servicio de Detección de Movimiento</string>
+    <string name="notification_channel_desc">Mantiene activo el sensor de movimiento para despertar la pantalla sin usar el botón físico</string>
+    <string name="notification_title">WakeGuard Activo</string>
+    <string name="notification_text">Sensor de movimiento listo para encender la pantalla</string>
+    <string name="notification_paused">WakeGuard Pausado temporalmente</string>
+</resources>
