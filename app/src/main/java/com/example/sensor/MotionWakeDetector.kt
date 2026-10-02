@@ -28,13 +28,13 @@ data class SensorLiveSnapshot(
 
 /**
  * MotionWakeDetector: Procesador inteligente de sensores de movimiento y proximidad.
- * 
- * Lógica de ahorro de energía y precisión:
- * 1. Monitorea el acelerómetro con muestreo controlado (SENSOR_DELAY_NORMAL o UI).
- * 2. Integra el sensor de proximidad como "Escudo de Bolsillo": si el sensor está tapado
- *    (dentro de un pantalón, bolso o boca abajo sobre una mesa), se descarta todo movimiento,
- *    evitando encendidos involuntarios y ahorrando batería de la pantalla y CPU.
- * 3. Aplica ventana de enfriamiento (Cooldown) configurable para evitar bucles de encendido al caminar.
+ *
+ * Características clave:
+ * 1. Monitorea el acelerómetro con muestreo eficiente (Eco o Fluido).
+ * 2. Integra el sensor de proximidad con compatibilidad para sensores binarios (comunes en marcas como Tecno,
+ *    Xiaomi y Motorola) y analógicos, evitando falsos positivos que bloqueen el encendido.
+ * 3. Detección de sacudida firme y deliberada (doble golpe en sentido opuesto en eje X o Y).
+ * 4. Ventana de enfriamiento (Cooldown) configurable para evitar bucles al caminar o viajar.
  */
 class MotionWakeDetector(
     context: Context,
@@ -56,16 +56,17 @@ class MotionWakeDetector(
     var pocketProtectionEnabled: Boolean = true
     var cooldownMillis: Long = 5000L
 
-    // Variables internas de estado
+    // Variables internas de estado de proximidad
     private var isNearPocket: Boolean = false
     private var lastWakeTime: Long = 0L
     private var lastProximityChangeTime: Long = 0L
     private var wasPreviouslyNear: Boolean = false
 
-    // Detección de agitación con picos alternados para evitar falsos positivos
-    private var shakePeakCount: Int = 0
-    private var lastShakePeakTime: Long = 0L
-    private var lastAxisSign: Float = 0f
+    // Detección de sacudida firme y deliberada (ida y vuelta con inversión de sentido)
+    private var shakeStrokeCount: Int = 0
+    private var firstStrokeTime: Long = 0L
+    private var firstStrokeSign: Float = 0f
+    private var firstStrokeAxis: String = "" // "X" o "Y"
 
     // Detección de levantamiento (Lift to wake)
     private var wasLyingFlat: Boolean = false
@@ -76,6 +77,7 @@ class MotionWakeDetector(
 
     fun startListening(ecoSampling: Boolean) {
         vehicularFilter.reset()
+        resetShakeState()
         val delay = if (ecoSampling) SensorManager.SENSOR_DELAY_NORMAL else SensorManager.SENSOR_DELAY_UI
         accelerometer?.let {
             sensorManager.registerListener(this, it, delay)
@@ -87,7 +89,15 @@ class MotionWakeDetector(
 
     fun stopListening() {
         vehicularFilter.reset()
+        resetShakeState()
         sensorManager.unregisterListener(this)
+    }
+
+    private fun resetShakeState() {
+        shakeStrokeCount = 0
+        firstStrokeTime = 0L
+        firstStrokeSign = 0f
+        firstStrokeAxis = ""
     }
 
     override fun onSensorChanged(event: SensorEvent?) {
@@ -95,14 +105,24 @@ class MotionWakeDetector(
 
         val now = System.currentTimeMillis()
 
+        // 1. Manejo del sensor de proximidad (Escudo anti-bolsillo)
         if (event.sensor.type == Sensor.TYPE_PROXIMITY) {
             val maxRange = event.sensor.maximumRange
             val distance = event.values[0]
-            val isCurrentlyNear = distance < 3.0f || distance < maxRange
+
+            // Detección adaptativa para Tecno y Android genérico:
+            // Muchos teléfonos Tecno, Xiaomi y Samsung tienen sensores binarios donde maxRange es 1.0f o 5.0f.
+            // Si maxRange <= 2.0f, el estado "CERCA" solo ocurre si distance < maxRange (generalmente 0.0f).
+            // Si el sensor es analógico (maxRange > 2.0f), se evalúa distance < 3.0f y distance < maxRange.
+            val isCurrentlyNear = if (maxRange <= 2.0f) {
+                distance < maxRange
+            } else {
+                distance < 3.0f && distance < maxRange
+            }
 
             if (isNearPocket != isCurrentlyNear) {
                 if (isNearPocket && !isCurrentlyNear) {
-                    // Transición de CERCA a LEJOS (sacado del bolsillo)
+                    // Transición de CERCA a LEJOS (por ejemplo, al sacar el teléfono del bolsillo)
                     wasPreviouslyNear = true
                     lastProximityChangeTime = now
                 }
@@ -112,6 +132,7 @@ class MotionWakeDetector(
             return
         }
 
+        // 2. Manejo del acelerómetro
         if (event.sensor.type == Sensor.TYPE_ACCELEROMETER) {
             val ax = event.values[0]
             val ay = event.values[1]
@@ -137,10 +158,10 @@ class MotionWakeDetector(
                 isCooldown = isCoolingDown
             )
 
-            // Si el detector está desactivado o en periodo de enfriamiento, no procesar triggers
+            // Si el detector está desactivado o en periodo de enfriamiento, no procesar activaciones
             if (!isEnabled || isCoolingDown) return
 
-            // Si la protección de bolsillo está activa y el sensor está tapado, abortar inmediatamente
+            // Si la protección de bolsillo está activa y el sensor está tapado, descartar movimiento
             if (pocketProtectionEnabled && isNearPocket) return
 
             evaluarGestos(now, ax, ay, az, totalAcc, deltaAcc, pitch)
@@ -164,13 +185,13 @@ class MotionWakeDetector(
         deltaAcc: Float,
         pitch: Float
     ) {
-        // Cálculo de umbral basado en la sensibilidad elegida por el usuario (1.0 = baja, 5.0 = alta)
-        val shakeThreshold = 25.0f - (sensitivity * 3.4f)
+        // Cálculo del umbral para sacudida firme y deliberada (sensibilidad 1.0 a 5.0)
+        // Con sensibilidad por defecto 2.5: threshold = 15.0 m/s² (aprox 2.5 G totales)
+        val shakeThreshold = 21.0f - (sensitivity * 2.4f)
         val liftThreshold = 18.0f - (sensitivity * 2.2f)
 
-        // 1. Filtro pasivo anti-baches y anti-moto: Si el movimiento es parte de un traqueteo
-        // vehicular repetitivo o el dispositivo está en orientación invertida (boca abajo en el bolso),
-        // se ignora de forma 100% silenciosa (sin vibrar y sin encender la pantalla).
+        // 1. Filtro pasivo anti-baches y anti-moto: Ignora baches de asfalto repetitivos
+        // o si el teléfono está boca abajo mirando al suelo en un bolso koala.
         if (vehicularFilter.shouldSuppressBump(now, deltaAcc, shakeThreshold, az, pitch)) {
             return
         }
@@ -186,8 +207,8 @@ class MotionWakeDetector(
                 procesarExtraccionBolsillo(now, deltaAcc, totalAcc, az, pitch)
             }
             "ANY" -> {
-                // Cualquier movimiento significativo superior al umbral pero en postura ergonómica válida
-                if (deltaAcc > (shakeThreshold * 0.75f) && vehicularFilter.isNaturalViewingOrientation(az, pitch)) {
+                // Cualquier movimiento notorio que supere el umbral sin estar boca abajo
+                if (deltaAcc > shakeThreshold && az > -3.5f) {
                     dispararEncendido("ANY", totalAcc)
                 }
             }
@@ -195,9 +216,9 @@ class MotionWakeDetector(
     }
 
     /**
-     * Algoritmo de agitación (Shake):
-     * Requiere al menos dos aceleraciones fuertes en sentido opuesto en un periodo de 550 ms
-     * y que el dispositivo esté en orientación de lectura visible para el usuario.
+     * Algoritmo de sacudida firme y deliberada (Shake):
+     * Requiere un movimiento de ida y vuelta claro (inversión de sentido en eje X o eje Y)
+     * en un intervalo de 120 ms a 700 ms, evitando activaciones accidentales por choques simples.
      */
     private fun procesarAgitacion(
         now: Long,
@@ -209,36 +230,43 @@ class MotionWakeDetector(
         threshold: Float,
         totalAcc: Float
     ) {
-        // Descartar si el teléfono no tiene una orientación de visualización natural
-        if (!vehicularFilter.isNaturalViewingOrientation(az, pitch)) {
-            return
-        }
-
+        // Verificar si la aceleración supera el umbral configurado
         if (deltaAcc > threshold) {
-            val dominantAxis = if (abs(ax) > abs(ay)) ax else ay
-            val currentSign = if (dominantAxis > 0) 1f else -1f
+            val isAxisX = abs(ax) > abs(ay)
+            val dominantAxis = if (isAxisX) "X" else "Y"
+            val currentVal = if (isAxisX) ax else ay
+            val currentSign = if (currentVal > 0) 1f else -1f
 
-            if (now - lastShakePeakTime < 550) {
-                if (currentSign != lastAxisSign) {
-                    shakePeakCount++
-                    if (shakePeakCount >= 2) {
-                        shakePeakCount = 0
+            if (shakeStrokeCount == 0) {
+                // Primer golpe de aceleración firme de la sacudida
+                shakeStrokeCount = 1
+                firstStrokeTime = now
+                firstStrokeSign = currentSign
+                firstStrokeAxis = dominantAxis
+            } else {
+                // Segundo golpe: comprobar si es el contragolpe con inversión de dirección
+                val elapsed = now - firstStrokeTime
+                if (elapsed in 120L..700L) {
+                    // Si el eje dominante coincide y el signo se invirtió (+ hacia - o viceversa)
+                    if (dominantAxis == firstStrokeAxis && currentSign != firstStrokeSign) {
+                        resetShakeState()
                         dispararEncendido("SHAKE", totalAcc)
                         return
                     }
+                } else if (elapsed > 700L) {
+                    // Si pasó demasiado tiempo, reiniciar el ciclo con este golpe como primero
+                    shakeStrokeCount = 1
+                    firstStrokeTime = now
+                    firstStrokeSign = currentSign
+                    firstStrokeAxis = dominantAxis
                 }
-            } else {
-                shakePeakCount = 1
             }
-            lastShakePeakTime = now
-            lastAxisSign = currentSign
         }
     }
 
     /**
      * Algoritmo de levantamiento e inclinación (Lift to Wake):
-     * Detecta cuando el teléfono pasa de estar plano (en una mesa o en reposo con z ~ 9.8)
-     * a estar inclinado hacia el rostro del usuario (ay entre 3.5 y 8.5 m/s² y pitch entre 25° y 75°).
+     * Detecta cuando el teléfono pasa de reposo horizontal a inclinarse hacia el rostro del usuario.
      */
     private fun procesarLevantamiento(
         now: Long,
@@ -258,7 +286,7 @@ class MotionWakeDetector(
 
         // Si estuvo en reposo plano en los últimos 3 segundos y ahora se eleva e inclina de frente
         if (wasLyingFlat && (now - flatDetectionTime) < 3000) {
-            val isTiltedUpright = pitch in 22.0f..80.0f && ay > 3.0f && vehicularFilter.isNaturalViewingOrientation(az, pitch)
+            val isTiltedUpright = pitch in 20.0f..85.0f && ay > 2.8f && vehicularFilter.isNaturalViewingOrientation(az, pitch)
             if (isTiltedUpright && deltaAcc > 2.0f) {
                 wasLyingFlat = false
                 dispararEncendido("LIFT", totalAcc)
@@ -268,8 +296,8 @@ class MotionWakeDetector(
 
     /**
      * Algoritmo de extracción de bolsillo o bolso:
-     * Si el sensor de proximidad pasó de estar bloqueado a desbloqueado en los últimos 1.2 segundos,
-     * se extrajo del bolso y se encuentra de cara al usuario, se enciende la pantalla al instante.
+     * Si el sensor de proximidad pasó de estar bloqueado a despejado en los últimos 1.2 segundos
+     * y el usuario sostiene el terminal de frente.
      */
     private fun procesarExtraccionBolsillo(
         now: Long,
@@ -279,7 +307,7 @@ class MotionWakeDetector(
         pitch: Float
     ) {
         if (wasPreviouslyNear && (now - lastProximityChangeTime) < 1200) {
-            if (deltaAcc > 2.5f && vehicularFilter.isNaturalViewingOrientation(az, pitch)) {
+            if (deltaAcc > 2.2f && vehicularFilter.isNaturalViewingOrientation(az, pitch)) {
                 wasPreviouslyNear = false
                 dispararEncendido("POCKET", totalAcc)
             }
@@ -292,6 +320,6 @@ class MotionWakeDetector(
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
-        // No se requiere acción en cambio de precisión
+        // No se requiere acción ante cambios de precisión de hardware
     }
 }

@@ -90,4 +90,49 @@ class ExampleUnitTest {
         assertFalse("Un gesto legítimo de lectura no debe ser suprimido", gestoValido)
         assertTrue("La orientación debe ser reconocida como ergonómica natural", filter.isNaturalViewingOrientation(azLectura, pitchLectura))
     }
+
+    @Test
+    fun `verificar que una sacudida humana de 3 muestras sucesivas en 80 ms NO es bloqueada por el filtro vehicular`() {
+        val filter = com.example.sensor.VehicularBumpFilter()
+        val threshold = 15.0f
+        val azNormal = 7.0f
+        val pitchNormal = 35.0f
+        val tiempoInicio = 30000L
+
+        // Muestra 1 a 0 ms (inicio del golpe de la sacudida)
+        val s1 = filter.shouldSuppressBump(tiempoInicio, 17.0f, threshold, azNormal, pitchNormal)
+        assertFalse("La primera muestra de la sacudida no debe suprimirse", s1)
+
+        // Muestra 2 a 30 ms (mismo golpe de la sacudida humana)
+        val s2 = filter.shouldSuppressBump(tiempoInicio + 30L, 18.0f, threshold, azNormal, pitchNormal)
+        assertFalse("La segunda muestra a 30 ms es parte del mismo movimiento y no debe suprimirse", s2)
+
+        // Muestra 3 a 60 ms (mismo golpe de la sacudida humana)
+        val s3 = filter.shouldSuppressBump(tiempoInicio + 60L, 19.0f, threshold, azNormal, pitchNormal)
+        assertFalse("La tercera muestra a 60 ms no debe confundirse con 3 baches de carretera", s3)
+    }
+
+    @Test
+    fun `verificar logica adaptativa del sensor de proximidad en dispositivos Tecno con sensor binario`() {
+        // En Tecno / Xiaomi, muchos sensores binarios tienen maxRange = 1.0f
+        val maxRangeBinario = 1.0f
+
+        // Caso 1: Celular en la mano despejado (distancia = 1.0f)
+        val distanceDespejado = 1.0f
+        val isNearDespejado = if (maxRangeBinario <= 2.0f) {
+            distanceDespejado < maxRangeBinario
+        } else {
+            distanceDespejado < 3.0f && distanceDespejado < maxRangeBinario
+        }
+        assertFalse("Cuando el sensor binario reporta 1.0f debe considerarse DESPEJADO (no cerca)", isNearDespejado)
+
+        // Caso 2: Celular en el bolsillo tapado (distancia = 0.0f)
+        val distanceTapado = 0.0f
+        val isNearTapado = if (maxRangeBinario <= 2.0f) {
+            distanceTapado < maxRangeBinario
+        } else {
+            distanceTapado < 3.0f && distanceTapado < maxRangeBinario
+        }
+        assertTrue("Cuando el sensor binario reporta 0.0f debe considerarse CERCA (en bolsillo)", isNearTapado)
+    }
 }

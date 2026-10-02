@@ -139,6 +139,11 @@ fun DashboardScreen(
 
         Spacer(modifier = Modifier.height(20.dp))
 
+        val inAppShake by viewModel.inAppShakeEvent.collectAsStateWithLifecycle()
+        val isRecentShake = inAppShake?.let { (timestamp, _) ->
+            (System.currentTimeMillis() - timestamp) < 4000L
+        } ?: false
+
         // Tarjeta Maestra con Interruptor Principal y Animación de Pulso
         MasterControlCard(
             isRunning = isRunning,
@@ -146,7 +151,59 @@ fun DashboardScreen(
             onToggle = { viewModel.toggleService(context) }
         )
 
-        Spacer(modifier = Modifier.height(20.dp))
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // Alerta visual interactiva en tiempo real al reconocer una sacudida dentro de la app
+        AnimatedVisibility(visible = isRecentShake) {
+            inAppShake?.let { (_, gForce) ->
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 12.dp)
+                        .testTag("in_app_shake_success_card"),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.secondary),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.CheckCircle,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "¡Sacudida Firme Reconocida!",
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 14.sp,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                            Text(
+                                text = "Fuerza: %.1f G. El sensor y el algoritmo respondieron con éxito.".format(gForce / 9.8f),
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.85f)
+                            )
+                        }
+                    }
+                }
+            }
+        }
 
         // Botón de prueba interactiva inmediata
         Button(

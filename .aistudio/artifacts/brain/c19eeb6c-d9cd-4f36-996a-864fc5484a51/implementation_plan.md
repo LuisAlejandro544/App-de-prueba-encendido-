@@ -1,119 +1,148 @@
-# Supresión Automática de Baches Vehiculares y Movimiento en Bolso (Zero-Config)
+# Plan de Reparación y Optimización: Detección Firme por Sacudida (Shake to Wake) en Tecno / Android
 
-Plan de arquitectura técnica para incorporar un algoritmo pasivo de discriminación de movimiento que ignore de forma 100% automática y silenciosa los baches de motocicleta, irregularidades del terreno y rebotes en bolsos o riñoneras (koalas), sin que el usuario tenga que cambiar modos, ajustar sensibilidades ni tocar ninguna configuración.
-
----
-
-### Decisiones Críticas Confirmadas
-
-- **Comportamiento 100% Silencioso:** Ante baches o vibraciones de moto, el teléfono simplemente ignora el estímulo. No emite vibración háptica, no despierta la pantalla y no genera notificaciones.
-- **Cero Configuración Manual (Zero-Config):** No se añaden botones molestos de "Modo Moto" ni conmutadores manuales. El algoritmo opera de manera autónoma y transparente en segundo plano.
-- **Sin Ruido en la Interfaz:** No requiere pantallas adicionales ni sobrecarga visual; la lógica se integra directamente en el motor de detección de movimiento de bajo consumo.
+Plan de ingeniería para solucionar de raíz el problema donde el teléfono no enciende al sacudirlo, ajustando los algoritmos de detección, corrigiendo la lógica del sensor de proximidad en dispositivos Tecno (HiOS), permitiendo pruebas con pantalla encendida y garantizando la robustez ante la agresiva gestión de batería de HiOS.
 
 ---
 
-## 1. Visión General y Concepto Central
+### Decisiones Confirmadas con el Usuario
 
-### ¿Qué problema resuelve?
-Cuando un usuario viaja en motocicleta o bicicleta llevando el teléfono en un bolso, mochila o riñonera (koala), el pavimento irregular y los baches generan aceleraciones bruscas que un acelerómetro estándar confunde con una agitación deliberada (*shake*).
+- **Tipo de Gesto Solicitado:** Sacudida firme y deliberada (evita falsos toques al caminar o manipular el móvil casualmente).
+- **Entorno de Prueba:** De ambas formas (con la pantalla apagada/bloqueada y con la pantalla encendida dentro de la app).
+- **Dispositivo Principal:** Marca **Tecno** (Capa de personalización **HiOS**, basada en Android, con optimizador de batería Phone Master / Battery Lab y sensor de proximidad binario o virtual).
 
-### La Solución Pasiva
-El algoritmo diferencia la física de un gesto humano deliberado frente a la vibración vehicular mediante tres firmas físicas naturales:
-1. **Firma de Traqueteo Continuo (*Rattle & Road Noise*):** Un bache o el motor de la moto genera oscilaciones repetitivas en ventanas menores a 400 ms. Un gesto humano para ver la pantalla es un impulso singular seguido de quietud.
-2. **Ventana Fisiológica de Mirada (*Viewing Angle*):** Cuando un humano levanta el teléfono para mirarlo, este queda con la pantalla orientada hacia arriba con una inclinación entre 30° y 85°. En un bolso de moto el dispositivo oscila horizontal, invertido o de lado.
-3. **Escudo de Proximidad con Verificación Doble:** Si el teléfono está en un bolso o koala, cualquier lectura de cercanía al inicio o 150 ms tras el impacto anula el despertar.
+---
+
+## 1. Visión General del Problema y Causa Raíz
+
+Tras el análisis exhaustivo del código, se identificaron cuatro cuellos de botella que provocaban el fallo reportado por el usuario:
 
 ```
-                    [ Impacto / Bache detectado ]
-                                │
-                                ▼
-               ¿El sensor de proximidad detecta roce?
-                             /        \
-                          (SÍ)        (NO)
-                           │            │
-                           ▼            ▼
-                   [ IGNORAR ]   ¿Hay ráfaga de >2 picos en <1.5s?
-                    (Silencio)    (Traqueteo / vibración de moto)
-                                      /        \
-                                   (SÍ)        (NO)
-                                    │            │
-                                    ▼            ▼
-                            [ IGNORAR ]   ¿Ángulo fisiológico de
-                             (Silencio)     mirada hacia la cara?
-                                                /        \
-                                             (NO)        (SÍ)
-                                              │            │
-                                              ▼            ▼
-                                      [ IGNORAR ]   [ DESPERTAR PANTALLA ]
-                                       (Silencio)   (Solo gesto humano real)
+                            [ Sacudida con la mano ]
+                                       │
+                                       ▼
+  ┌────────────────────────────────────────────────────────────────────────┐
+  │ FALLO 1: Sensor de Proximidad en Tecno                                 │
+  │ Condición errónea: `distance < 3.0f || distance < maxRange`            │
+  │ En Tecno con sensor binario (maxRange=1.0cm), libre reporta 1.0cm.     │
+  │ Como 1.0 < 3.0 es VERDADERO, la app asume que está tapado en bolsillo. │
+  └───────────────────────────────────┬────────────────────────────────────┘
+                                       │ (Bloqueaba el 100% de los intentos)
+                                       ▼
+  ┌────────────────────────────────────────────────────────────────────────┐
+  │ FALLO 2: Supresión Falsa en VehicularBumpFilter                        │
+  │ El sensor muestrea a 20-50 Hz. Una sacudida humana genera 3 muestras   │
+  │ consecutivas en <100 ms. El filtro las contaba como 3 baches de moto   │
+  │ y activaba un bloqueo temporal de 2 segundos.                          │
+  └───────────────────────────────────┬────────────────────────────────────┘
+                                       │
+                                       ▼
+  ┌────────────────────────────────────────────────────────────────────────┐
+  │ FALLO 3: Pausa por Pantalla Encendida (screenOnPause)                  │
+  │ Al probar la sacudida dentro de la app o mirando la pantalla, el       │
+  │ detector se desactiva para ahorrar batería, sin aviso visual al usuario│
+  └───────────────────────────────────┬────────────────────────────────────┘
+                                       │
+                                       ▼
+  ┌────────────────────────────────────────────────────────────────────────┐
+  │ FALLO 4: Políticas de Fondo en HiOS (Tecno Phone Master)               │
+  │ HiOS bloquea inicios de actividad transparentes en segundo plano si    │
+  │ no se configuran permisos de auto-arranque y pantalla completa.        │
+  └────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 2. Experiencia de Usuario y Cero Fricción
+## 2. Solución Técnica Propuesta
 
-- **Transparencia Total:** El usuario no tiene que acordarse de activar un perfil antes de subir a la moto ni desactivarlo al bajarse.
-- **Preservación de Batería:** Al descartar de inmediato los baches en la primera capa matemática del acelerómetro, se evita encender la pantalla en vano y se mantiene la tasa de muestreo ultra baja (~15 Hz Eco).
-- **Consistencia Visual:** No se altera la paleta de colores, iconos ni las pantallas de navegación ya existentes en Jetpack Compose, respetando el principio de estabilidad de interfaz.
+### A. Corrección del Sensor de Proximidad (`MotionWakeDetector.kt`)
+* **Problema:** En teléfonos Tecno con sensor binario donde `maximumRange` es `1.0 cm` (o `5.0 cm`), evaluar `distance < 3.0f` siempre devuelve `true` cuando el sensor está despejado si el rango máximo es 1.0.
+* **Solución Robusta:** 
+  ```kotlin
+  // El estado "CERCA" solo es válido si la distancia medida es menor al rango máximo
+  // Y menor a 2.0 cm (para sensores continuos con rangos grandes).
+  val isCurrentlyNear = if (maxRange <= 2.0f) {
+      distance < maxRange // En sensores binarios (0 = cerca, 1 = lejos)
+  } else {
+      distance < 3.0f && distance < maxRange // En sensores con escala analógica/continua
+  }
+  ```
+
+### B. Diferenciación de Sacudida Firme vs. Baches de Moto (`VehicularBumpFilter.kt` y `MotionWakeDetector.kt`)
+* **Problema:** Un bache vehicular produce aceleración errática en múltiples ejes o vibración mecánica de alta frecuencia, mientras que una **sacudida humana deliberada** consiste en un golpe de ida y vuelta claro con inversión de signo en el eje dominante (vector X o Y).
+* **Solución:**
+  1. En `VehicularBumpFilter`: No contar muestras de acelerómetro consecutivas como impactos independientes. Exigir un tiempo mínimo de separación entre impactos de baches (>180 ms) para no confundir una curva de aceleración continua de una sacudida con una ráfaga de baches.
+  2. En `MotionWakeDetector`: Ajustar el algoritmo de agitación para que requiera **2 picos firmes en sentido opuesto** (ida y vuelta deliberada) dentro de una ventana de 200 ms a 650 ms, con una aceleración neta de $\Delta acc \ge 14.5\text{ m/s}^2$ (firme y controlada).
+  3. No abortar la sacudida por fluctuaciones dinámicas del eje Z durante el movimiento rápido.
+
+### C. Soporte para Pruebas en Vivo con Pantalla Encendida
+* En la pantalla principal (`DashboardScreen`) y en `GesturesScreen`, incorporar un **Modo de Calibración / Prueba de Sacudida en Vivo**:
+  * Cuando el usuario está dentro de la app observando la pantalla, la app detectará la sacudida y proporcionará **retroalimentación háptica inmediata (vibración) y visual** (tarjeta iluminada en verde "¡Gesto Firme Reconocido!"), demostrando que el sensor responde perfectamente sin forzar a apagar la pantalla a ciegas.
+  * Cuando la pantalla se apague, el servicio activará el encendido real mediante `WakeLock` y `WakeScreenActivity`.
+
+### D. Optimización para Tecno (HiOS) y Android 10-15
+* En `WakeScreenActivity`: Asegurar banderas `turnScreenOn` y `showWhenLocked` con respaldo de `PowerManager.SCREEN_BRIGHT_WAKE_LOCK or ACQUIRE_CAUSES_WAKEUP`.
+* En `GuideScreen`: Añadir una tarjeta instructiva específica para **Tecno / Infinix (HiOS / XOS)** explicando cómo fijar la app en el administrador de tareas (candado) y desactivar las restricciones en **Phone Master -> Batería -> Inicio automático**.
 
 ---
 
-## 3. Decisiones Técnicas y Compensaciones (Trade-Offs)
-
-### Decisión 1: Filtrado Temporal de Frecuencia (Ráfagas vs. Impulso Único)
-- **Enfoque Elegido:** Medir la ventana temporal entre picos de aceleración. Si se registran $\ge 3$ cruces de umbral en menos de 1500 ms, se cataloga como "vibración ambiental/vehicular continua" y se bloquea el disparo durante esa ráfaga más un período de calma de 2 segundos.
-- **Por qué:** Un bache de moto nunca viene solo; la moto sigue rodando con microvibraciones. Un humano que quiere ver la hora agita una vez y mira el teléfono fijamente.
-- **Alternativa descartada:** Usar GPS o Activity Recognition API (detectar `IN_VEHICLE`), ya que consumiría batería alta por GPS, requeriría servicios de Google Play (incompatible con distribución limpia e independiente en Uptodown) y solicitaría permisos intrusivos de ubicación.
-
-### Decisión 2: Ventana Angular Tridimensional de Gravedad
-- **Enfoque Elegido:** Descomponer el vector de gravedad normalizado ($Z / g$) para corroborar que la pantalla esté mirando hacia el usuario (ángulo de lectura entre 30° y 85° respecto al plano horizontal) al momento de autorizar el encendido.
-- **Por qué:** En un koala o bolso durante el trayecto, el teléfono descansa de canto o boca abajo. Aunque un bache fuerte supere el umbral de aceleración, el vector $Z$ no apuntará en la dirección del rostro humano.
-
-### Decisión 3: Verificación de Proximidad Asíncrona (Double-Check)
-- **Enfoque Elegido:** Muestrear el sensor de proximidad en el momento exacto del impacto y a los 150 ms posteriores. Si el teléfono está en un koala, el tejido o las paredes del bolso cubrirán el sensor en alguno de los dos instantes.
-
----
-
-## 4. Arquitectura de Implementación
+## 3. Diagrama de Arquitectura del Módulo Reparado
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
 │                        MotionWakeDetector.kt                           │
 ├────────────────────────────────────────────────────────────────────────┤
-│ - val roadNoiseFilter: RoadNoiseFilter (análisis de ráfagas continuas)  │
-│ - fun isFacingHumanEyes(gx, gy, gz): Boolean (validación de postura)   │
-│ - fun isNearPocketOrBag(): Boolean (sensor de proximidad instantáneo) │
-│ - fun onSensorChanged(event: SensorEvent)                              │
-│     ├── 1. Proximidad activa -> Return (Descartar)                     │
-│     ├── 2. Registro de pico en buffer circular temporal                │
-│     ├── 3. Si ráfaga continua detectada (moto/baches) -> Return        │
-│     ├── 4. Si ángulo fuera de postura humana -> Return                 │
-│     └── 5. Gesto legítimo -> Disparar onWakeTriggered()               │
-└────────────────────────────────────────────────────────────────────────┘
-                                   │
-                                   ▼
+│ 1. Filtro de Proximidad Binario/Analógico para Tecno (Sin falsos CERCA)│
+│ 2. Detección de Inversión de Signo (+X/-X o +Y/-Y) en 200-650ms       │
+│ 3. Umbral Firme: DeltaAcc > 14.5 m/s² (Sin disparos accidentales)      │
+│ 4. Modo Test en App: Emite evento visual/háptico si la pantalla está ON│
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │ (Gesto humano verificado)
+                                    ▼
 ┌────────────────────────────────────────────────────────────────────────┐
 │                        WakeMotionService.kt                            │
 ├────────────────────────────────────────────────────────────────────────┤
-│ - Recibe la señal limpia y verificada                                  │
-│ - Ejecuta WakeLock + WakeScreenActivity sin vibraciones parásitas       │
-│ - Registra el evento en Room Database sobre Dispatchers.IO             │
+│ - Si pantalla está APAGADA:                                            │
+│   * WakeLock (SCREEN_BRIGHT_WAKE_LOCK or ACQUIRE_CAUSES_WAKEUP)       │
+│   * Dispara WakeScreenActivity con setShowWhenLocked/turnScreenOn      │
+│   * Vibración de confirmación                                          │
+│   * Registro en Room Database (Dispatchers.IO)                         │
+│ - Si pantalla está ENCENDIDA en la app:                                │
+│   * Emite evento en vivo para feedback visual en tiempo real           │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Cambios a realizar en archivos de código:
+---
+
+## 4. Archivos Involucrados y Cambios Concretos
+
 1. **`app/src/main/java/com/example/sensor/MotionWakeDetector.kt`**:
-   - Incorporar la lógica matemática de detección de ráfagas continuas (`RoadNoiseFilter`).
-   - Añadir la validación del vector de gravedad para ángulo fisiológico de lectura.
-   - Añadir comentarios detallados en español explicando cada fórmula física.
-2. **`app/src/test/java/com/example/ExampleUnitTest.kt`**:
-   - Pruebas unitarias locales simulando:
-     a) Ráfaga de baches de moto (3 impactos en 800 ms) $\rightarrow$ Debe ser ignorada (`assertFalse`).
-     b) Levantamiento natural con postura de lectura $\rightarrow$ Debe ser aceptado (`assertTrue`).
+   - Corrección de la lectura de proximidad para sensores de Tecno (`maxRange <= 2.0f`).
+   - Algoritmo de agitación con doble pico de signo alterno para sacudida deliberada y firme.
+   - Manejo del estado de prueba interactiva cuando la pantalla está encendida.
+   - Comentarios explicativos en español en toda la lógica.
+
+2. **`app/src/main/java/com/example/sensor/VehicularBumpFilter.kt`**:
+   - Corrección para no tratar lecturas consecutivas de alta frecuencia (<180 ms) como baches separados de moto.
+   - Permitir oscilaciones dinámicas de la aceleración durante la sacudida humana.
+   - Comentarios explicativos en español.
+
+3. **`app/src/main/java/com/example/service/WakeMotionService.kt`**:
+   - Comunicación de eventos de sacudida detectados cuando la pantalla está activa para la interfaz de prueba.
+   - Fortalecimiento de la adquisición de WakeLock compatible con capas como HiOS de Tecno.
+   - Comentarios explicativos en español.
+
+4. **`app/src/main/java/com/example/ui/screens/DashboardScreen.kt`**:
+   - Visualización interactiva que notifica de inmediato cuando se reconoce una sacudida firme mientras la app está abierta ("¡Sacudida Detectada con Éxito!").
+
+5. **`app/src/main/java/com/example/ui/screens/GuideScreen.kt`**:
+   - Instrucciones específicas paso a paso para usuarios de **Tecno / Infinix (HiOS)** para evitar que el sistema cierre el servicio en segundo plano.
+
+6. **`app/src/test/java/com/example/ExampleUnitTest.kt`**:
+   - Pruebas unitarias de regresión para validar el nuevo cálculo de proximidad y la discriminación de sacudida firme frente a baches vehiculares.
 
 ---
 
-## 5. Verificación y Pruebas
+## 5. Protocolo de Verificación
 
-- **Compilación Limpia:** Ejecutar `compile_applet` para garantizar que no existan errores de sintaxis, tipos ni dependencias.
-- **Suite de Pruebas Unitarias:** Ejecutar `gradle :app:testDebugUnitTest` para validar que los escenarios de baches y gestos normales se comporten según las fórmulas físicas diseñadas.
+* **Compilación:** Ejecutar `compile_applet` para asegurar cero errores de tipos, sintaxis y compatibilidad con Android 8.0+.
+* **Pruebas Unitarias:** Ejecutar `gradle :app:testDebugUnitTest` para certificar que el algoritmo matemático aprueba la sacudida firme y rechaza los baches vehiculares.

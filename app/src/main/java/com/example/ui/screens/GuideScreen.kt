@@ -204,6 +204,13 @@ fun GuideScreen(
         Spacer(modifier = Modifier.height(10.dp))
 
         BrandInstructionCard(
+            brand = "Tecno / Infinix (HiOS / XOS)",
+            steps = "1. Abre la aplicación 'Phone Master' que viene preinstalada en tu Tecno.\n2. Entra en Batería / Ahorro de energía > 'Gestión de inicio automático' y ACTIVA WakeGuard.\n3. En Ajustes > Apps > WakeGuard > Batería, selecciona 'Sin restricciones' o desactiva la optimización.\n4. En la pantalla de aplicaciones recientes de HiOS, desliza hacia abajo o toca el candado para fijar WakeGuard y evitar que se cierre al limpiar la memoria."
+        )
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        BrandInstructionCard(
             brand = "Motorola / Google Pixel / Nokia",
             steps = "1. Ve a Ajustes > Apps > WakeGuard > Batería.\n2. Selecciona 'Sin restricciones'."
         )

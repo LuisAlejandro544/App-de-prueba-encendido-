@@ -1,6 +1,6 @@
 {
-  "summary":  "Plan técnico y de diseño para la detección y supresión automática de baches vehiculares y movimiento en bolso koala (filtro anti-traqueteo continuo, ventana fisiológica de ángulo y doble verificación de proximidad) sin requerir ninguna configuración manual del usuario.",
-  "updatedAt":  "2026-10-02T01:19:59.772204162Z",
+  "summary":  "Plan de corrección integral para el encendido por sacudida (Shake to Wake) en WakeGuard. Corrige el falso positivo del sensor de proximidad en dispositivos Tecno, ajusta el filtro anti-baches para no bloquear la sacudida humana, calibra el umbral para sacudidas firmes y deliberadas, habilita la prueba interactiva con pantalla encendida y añade compatibilidad específica para HiOS (Tecno).",
+  "updatedAt":  "2026-10-02T12:33:57.254774060Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

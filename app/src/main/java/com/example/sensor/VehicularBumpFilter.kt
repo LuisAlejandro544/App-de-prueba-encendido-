@@ -2,33 +2,32 @@ package com.example.sensor
 
 /**
  * Filtro inteligente pasivo de supresión de baches y vibraciones vehiculares (Moto / Bicicleta / Bolso).
- * 
- * Diseñado específicamente para resolver el problema de trayectos en motocicleta o bicicleta,
- * donde el teléfono va dentro de un bolso, koala o riñonera y sufre sacudidas por baches en el camino:
- * 
+ *
  * Principios físicos aplicados de forma 100% automática y silenciosa:
- * 1. Análisis de cadencia de impactos continuos: Los baches de la carretera y la vibración del motor
- *    generan múltiples picos de aceleración repetitivos en intervalos muy cortos (< 450 ms).
- *    Un gesto humano deliberado es un impulso singular seguido de quietud para ver la pantalla.
- *    Si se registran 3 o más impactos seguidos en menos de 1.5 segundos, se activa un bloqueo temporal
- *    de supresión vehicular.
- * 2. Descarte por orientación invertida (Pantalla oculta): En un koala o bolso durante el viaje en moto,
- *    el teléfono oscila plano contra el cuerpo o boca abajo (eje Z fuertemente negativo).
- *    Ningún usuario mira la pantalla mientras está invertida o mirando al suelo.
- * 3. Cero molestias: No emite vibración háptica, no despierta la pantalla y no requiere intervención
- *    ni configuración manual del usuario.
+ * 1. Discriminación de ráfagas continuas de baches: Un bache vehicular o el traqueteo de la calzada
+ *    produce impactos repetitivos sucesivos en la carrocería. Para evitar que las muestras continuas
+ *    de una misma sacudida humana (<160 ms) se cuenten erróneamente como baches independientes,
+ *    se exige una separación temporal entre impactos. Si se registran 3 o más impactos distintos
+ *    en menos de 1.5 segundos, se activa la supresión vehicular por 2 segundos.
+ * 2. Descarte por orientación invertida fisiológica: Si el teléfono está en reposo boca abajo
+ *    o con la pantalla apuntando al suelo (az < -3.5 m/s²), se descarta el impacto.
+ * 3. Tolerancia a sacudidas humanas dinámicas: Permite movimientos deliberados con inversión
+ *    de sentido sin bloquear la aceleración legítima de la mano.
  */
 class VehicularBumpFilter {
 
-    // Registro de marcas de tiempo de impactos y oscilaciones recientes
+    // Registro de marcas de tiempo de impactos distintos
     private val recentBumpTimestamps = mutableListOf<Long>()
 
-    // Marca de tiempo hasta la cual se ignoran todos los movimientos por ruido vehicular
+    // Marca de tiempo hasta la cual se ignoran todos los movimientos por ruido vehicular continuo
     private var vehicleSuppressionUntil: Long = 0L
 
+    // Marca de tiempo del último impacto registrado para no contar muestras de un mismo golpe
+    private var lastRecordedBumpTime: Long = 0L
+
     /**
-     * Evalúa si una aceleración debe ser ignorada por ser producto de baches, vibración o traqueteo.
-     * 
+     * Evalúa si una aceleración debe ser ignorada por ser producto de baches o traqueteo continuo de moto.
+     *
      * @param now Marca de tiempo actual en milisegundos.
      * @param deltaAcc Variación neta de aceleración respecto a la gravedad terrestre.
      * @param threshold Umbral de sensibilidad base configurado en la app.
@@ -52,25 +51,29 @@ class VehicularBumpFilter {
             return true
         }
 
-        // 2. Descarte por orientación no visible:
-        // Si el eje Z es fuertemente negativo (la pantalla está boca abajo dentro del bolso o koala),
+        // 2. Descarte por orientación invertida:
+        // Si el eje Z es fuertemente negativo (la pantalla está boca abajo contra el piso o bolso koala invertido),
         // se ignora inmediatamente cualquier golpe o bache.
-        if (az < -1.5f) {
+        if (az < -3.5f) {
             return true
         }
 
-        // 3. Análisis de frecuencia de impactos (detección de baches sucesivos / calzada irregular)
+        // 3. Análisis de frecuencia de impactos distintos (cadencia vehicular / carretera)
         if (deltaAcc > (threshold * 0.70f)) {
-            // Eliminar impactos que ocurrieron hace más de 1500 milisegundos
-            recentBumpTimestamps.removeAll { now - it > 1500L }
-            recentBumpTimestamps.add(now)
+            // Solo registrar si han transcurrido al menos 160 ms desde el último impacto,
+            // garantizando que las muestras sucesivas de una sacudida humana no se cuenten como baches múltiples.
+            if (now - lastRecordedBumpTime >= 160L) {
+                lastRecordedBumpTime = now
+                // Eliminar impactos que ocurrieron hace más de 1500 milisegundos
+                recentBumpTimestamps.removeAll { now - it > 1500L }
+                recentBumpTimestamps.add(now)
 
-            // Si hay 3 o más impactos en esa ventana temporal, se trata de una vibración vehicular continua
-            if (recentBumpTimestamps.size >= 3) {
-                // Activar supresión automática por 2 segundos adicionales de calma
-                vehicleSuppressionUntil = now + 2000L
-                recentBumpTimestamps.clear()
-                return true
+                // Si hay 3 o más impactos en esa ventana temporal, se trata de una vibración vehicular continua
+                if (recentBumpTimestamps.size >= 3) {
+                    vehicleSuppressionUntil = now + 2000L
+                    recentBumpTimestamps.clear()
+                    return true
+                }
             }
         }
 
@@ -80,15 +83,15 @@ class VehicularBumpFilter {
     /**
      * Valida si el teléfono se encuentra en una orientación ergonómica normal
      * para que una persona pueda ver la pantalla de frente.
-     * 
+     *
      * @param az Eje Z del acelerómetro.
      * @param pitch Inclinación en grados respecto a la vertical.
      * @return true si la pantalla está de cara al usuario.
      */
     fun isNaturalViewingOrientation(az: Float, pitch: Float): Boolean {
-        // az > -1.5f garantiza que la pantalla no está apuntando al piso
-        // pitch entre -15° y 88° corresponde a sostener el móvil con la mano
-        return az > -1.5f && (pitch in -15.0f..88.0f)
+        // az > -3.5f garantiza que la pantalla no está apuntando totalmente al piso
+        // pitch entre -20° y 90° corresponde a sostener el móvil con la mano
+        return az > -3.5f && (pitch in -20.0f..90.0f)
     }
 
     /**
@@ -97,5 +100,6 @@ class VehicularBumpFilter {
     fun reset() {
         recentBumpTimestamps.clear()
         vehicleSuppressionUntil = 0L
+        lastRecordedBumpTime = 0L
     }
 }

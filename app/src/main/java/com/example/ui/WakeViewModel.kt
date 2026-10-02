@@ -78,6 +78,9 @@ class WakeViewModel(application: Application) : AndroidViewModel(application) {
     private val _liveSensorData = MutableStateFlow(SensorLiveSnapshot())
     val liveSensorData: StateFlow<SensorLiveSnapshot> = _liveSensorData.asStateFlow()
 
+    // Evento observable en tiempo real cuando se detecta una sacudida con la app abierta
+    val inAppShakeEvent: StateFlow<Pair<Long, Float>?> = WakeMotionService.inAppShakeDetectedEvent
+
     // Estado de la prueba interactiva del botón
     private val _testCountdown = MutableStateFlow<Int?>(null)
     val testCountdown: StateFlow<Int?> = _testCountdown.asStateFlow()

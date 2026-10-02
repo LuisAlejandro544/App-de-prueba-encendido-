@@ -43,6 +43,8 @@ import com.example.ui.screens.GuideScreen
 import com.example.ui.screens.StatsScreen
 import com.example.ui.theme.MyApplicationTheme
 
+import com.example.service.WakeMotionService
+
 /**
  * MainActivity: Punto de entrada de la interfaz de WakeGuard.
  * Aloja la barra de navegación inferior modular (Bottom Navigation)
@@ -59,6 +61,16 @@ class MainActivity : ComponentActivity() {
                 WakeGuardApp()
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        WakeMotionService.isAppInForeground = true
+    }
+
+    override fun onPause() {
+        WakeMotionService.isAppInForeground = false
+        super.onPause()
     }
 }
 
